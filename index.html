@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DartsAu by Skellium</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- JSZip -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { background-color: #0f172a; margin: 0; font-family: sans-serif; -webkit-tap-highlight-color: transparent; }
+        .animate-pulse-slow { animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
+        /* Hide scrollbar for Chrome, Safari and Opera */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none;  scrollbar-width: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
+        
+        // --- Shared Components & Logic ---
+
+        const Icon = ({ name, size = 24, className = "", fill = "none" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (iconRef.current) {
+                    lucide.createIcons({
+                        attrs: {
+                            stroke: "currentColor",
+                            "stroke-width": 2,
+                            "stroke-linecap": "round",
+                            "stroke-linejoin": "round",
+                            fill: fill,
+                            width: size,
+                            height: size
+                        },
+                        nameAttr: 'data-lucide'
+                    });
+                }
+            }, [name, size, fill]);
+            return <i data-lucide={name} className={className} ref={iconRef}></i>;
+        };
+
+        const STORAGE_KEY_DATA = 'dartsau_data_v1';
+        const STORAGE_KEY_GAME = 'dartsau_game_v1';
+
+        const INITIAL_STATS = {
+            gamesPlayed: 0, wins: 0, losses: 0, highestCheckout: 0,
+            totalDarts: 0, totalScore: 0, _180s: 0, _140s: 0, _100s: 0,
+        };
+
+        const BOT_LEVELS = {
+            EASY: { name: 'Pub Beginner', avg: 40, checkoutRate: 0.1, color: 'text-green-400' },
+            MEDIUM: { name: 'League Captain', avg: 60, checkoutRate: 0.3, color: 'text-yellow-400' },
+            HARD: { name: 'PDC Pro', avg: 95, checkoutRate: 0.7, color: 'text-red-500' },
+        };
+
+        const DEFAULT_TRIGGERS = [
+            { id: 'def_180', type: 'TURN_SCORE', value: 180, label: 'One Hundred and Eighty!', isDefault: true },
+            { id: 'def_win', type: 'EVENT', value: 'win', label: 'Game Shot!', isDefault: true },
+            { id: 'def_bust', type: 'EVENT', value: 'bust', label: 'Bust!', isDefault: true },
+            { id: 'def_start', type: 'EVENT', value: 'game_on', label: 'Game On', isDefault: true },
+            { id: 'def_botwin', type: 'EVENT', value: 'bot_win', label: 'Bot wins', isDefault: true },
+            { id: 'def_chips', type: 'SEQUENCE', value: '20,5,1', label: 'Fish and Chips!', isDefault: true },
+            { id: 'def_mot1', type: 'MOTIVATION', value: 'focus', label: 'Stay Focused!', isDefault: true },
+        ];
+
+        const getCheckoutGuide = (score) => {
+            if (score > 170 || score < 2) return null;
+            const checkouts = {
+                170: 'T20 T20 Bull', 167: 'T20 T19 Bull', 164: 'T20 T18 Bull', 161: 'T20 T17 Bull',
+                160: 'T20 T20 D20', 158: 'T20 T20 D19', 156: 'T20 T20 D18', 150: 'T20 T18 D18',
+                140: 'T20 T16 D16', 136: 'T20 T20 D8', 132: 'T20 T20 D6', 130: 'T20 T18 D8',
+                121: 'T20 T11 D14', 120: 'T20 20 D20', 110: 'T20 10 D20', 100: 'T20 D20',
+                90: 'T18 D18', 82: 'T14 D20', 80: 'T20 D10', 70: 'T18 D8', 60: '20 D20',
+                50: '10 D20', 40: 'D20', 36: 'D18', 32: 'D16', 20: 'D10', 10: 'D5', 4: 'D2', 2: 'D1'
+            };
+            return checkouts[score] || null;
+        };
+
+        const speak = (text) => {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.rate = 1.1;
+                window.speechSynthesis.speak(utterance);
+            }
+        };
+
+        const Header = ({ title, onBack }) => (
+            <div className="flex items-center space-x-4 mb-4">
+                <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-800 transition-colors">
+                    <Icon name="chevron-left" />
+                </button>
+                <h2 className="text-xl font-bold text-white">{title}</h2>
+            </div>
+        );
+
+        // --- Views (Defined outside App to prevent re-renders) ---
+
+        const MainMenu = ({ onNavigate, hasActiveGame, onContinue }) => (
+            <div className="p-6 flex flex-col h-screen overflow-hidden">
+                <div className="flex-1 flex flex-col justify-center items-center space-y-8">
+                    <div className="text-center space-y-2">
+                        <div className="w-24 h-24 bg-emerald-500 rounded-3xl mx-auto flex items-center justify-center shadow-lg rotate-6 hover:rotate-12 transition-transform shadow-emerald-500/20">
+                            <Icon name="target" size={56} className="text-slate-900" />
+                        </div>
+                        <h1 className="text-4xl font-black tracking-tighter text-white">
+                            DartsAu
+                            <span className="block text-lg font-medium text-emerald-400 tracking-normal">by Skellium</span>
+                        </h1>
+                    </div>
+                    <div className="w-full space-y-4 max-w-sm mx-auto">
+                        {hasActiveGame && (
+                            <button onClick={onContinue} className="w-full p-4 bg-slate-800 border border-emerald-500/30 rounded-xl flex items-center justify-between group hover:bg-slate-700 animate-pulse-slow transition-all">
+                                <span className="flex items-center font-bold text-emerald-400"><Icon name="rotate-ccw" className="mr-3" /> Continue Game</span>
+                                <Icon name="chevron-left" className="rotate-180" />
+                            </button>
+                        )}
+                        <button onClick={() => onNavigate('game_setup')} className="w-full p-5 bg-gradient-to-r from-emerald-600 to-emerald-500 rounded-xl flex items-center justify-between shadow-lg active:scale-95 transition-transform text-slate-900 font-bold text-xl shadow-emerald-500/20">
+                            <span className="flex items-center"><Icon name="play" className="mr-3" fill="currentColor" /> Play X01</span>
+                        </button>
+                        <button onClick={() => onNavigate('warm_up')} className="w-full p-4 bg-slate-800 rounded-xl flex items-center justify-between hover:bg-slate-700 active:scale-95 transition-all">
+                            <span className="flex items-center font-bold text-slate-300"><Icon name="activity" className="mr-3 text-blue-400" /> Warm Up</span>
+                        </button>
+                        <div className="grid grid-cols-2 gap-4">
+                            <button onClick={() => onNavigate('voice_studio')} className="p-4 bg-slate-800 rounded-xl flex flex-col items-center justify-center hover:bg-slate-700 active:scale-95 transition-all">
+                                <Icon name="mic" size={28} className="mb-2 text-rose-400" />
+                                <span className="text-sm font-bold text-slate-400">Voice Studio</span>
+                            </button>
+                            <button onClick={() => onNavigate('stats')} className="p-4 bg-slate-800 rounded-xl flex flex-col items-center justify-center hover:bg-slate-700 active:scale-95 transition-all">
+                                <Icon name="bar-chart-2" size={28} className="mb-2 text-yellow-400" />
+                                <span className="text-sm font-bold text-slate-400">Stats</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+
+        const GameSetupView = ({ onStart, onBack }) => {
+            const [score, setScore] = useState(501);
+            const [botLevel, setBotLevel] = useState('MEDIUM');
+            return (
+                <div className="p-6 h-screen flex flex-col">
+                    <Header title="New Game" onBack={onBack} />
+                    <div className="flex-1 space-y-8 mt-4">
+                        <div className="space-y-3">
+                            <label className="text-sm font-bold text-slate-400 uppercase tracking-wider">Starting Score</label>
+                            <div className="grid grid-cols-2 gap-4">
+                                {[301, 501].map(s => (
+                                    <button key={s} onClick={() => setScore(s)} className={`p-6 rounded-2xl font-black text-2xl border-2 transition-all ${score === s ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400' : 'border-slate-700 bg-slate-800 text-slate-500'}`}>{s}</button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="space-y-3">
+                            <label className="text-sm font-bold text-slate-400 uppercase tracking-wider">Bot Difficulty</label>
+                            <div className="space-y-2">
+                                {Object.keys(BOT_LEVELS).map(key => (
+                                    <button key={key} onClick={() => setBotLevel(key)} className={`w-full p-4 rounded-xl flex items-center justify-between border transition-all ${botLevel === key ? `border-current ${BOT_LEVELS[key].color} bg-slate-800` : 'border-transparent bg-slate-800/50 text-slate-500'}`}>
+                                        <span className="font-bold">{BOT_LEVELS[key].name}</span>
+                                        <span className="text-xs font-mono opacity-60">Avg: {BOT_LEVELS[key].avg}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                    <button onClick={() => onStart(score, botLevel)} className="w-full py-5 bg-emerald-500 text-slate-900 font-bold text-xl rounded-xl shadow-lg active:scale-95 transition-all shadow-emerald-500/20">Start Match</button>
+                </div>
+            );
+        };
+
+        const X01View = ({ state, setState, stats, setStats, playTrigger, triggers, onExit }) => {
+            const [inputMode, setInputMode] = useState('TOTAL');
+            const [input, setInput] = useState('');
+            const [darts, setDarts] = useState([null, null, null]);
+            const [currentDartIdx, setCurrentDartIdx] = useState(0);
+
+            const botConfig = BOT_LEVELS[state.botLevel];
+            const checkoutGuide = getCheckoutGuide(state.playerScore);
+
+            useEffect(() => {
+                if (state.turn === 'bot' && state.active) {
+                    const timer = setTimeout(handleBotTurn, 1500 + Math.random() * 1000);
+                    return () => clearTimeout(timer);
+                }
+            }, [state.turn, state.active]);
+
+            const handleBotTurn = () => {
+                let score = 0; const remaining = state.botScore;
+                if (remaining <= 170 && remaining > 1 && ![169,168,165,163,159].includes(remaining) && Math.random() < botConfig.checkoutRate) {
+                    playTrigger('EVENT', 'bot_win'); setState(prev => ({...prev, active: false, winner: 'bot'})); return;
+                }
+                const variance = 20;
+                score = Math.floor(botConfig.avg + (Math.random() * variance * 2) - variance);
+                if (score > 180) score = 180; if (score < 0) score = 0;
+                if (remaining - score < 2 && remaining - score !== 0) score = 0;
+                else if (remaining - score === 0) { playTrigger('EVENT', 'bot_win'); setState(prev => ({...prev, active: false, winner: 'bot'})); return; }
+                setState(prev => ({ ...prev, botScore: prev.botScore - score, turn: 'player', history: [...prev.history, { player: 'bot', score, remaining: remaining - score }] }));
+            };
+
+            const submitScore = () => {
+                let score = inputMode === 'TOTAL' ? parseInt(input, 10) : darts.reduce((a, b) => a + (b || 0), 0);
+                let seq = inputMode === 'DARTS' && darts.filter(d => d !== null).length === 3 ? darts.join(',') : null;
+                if (isNaN(score) || score > 180) return;
+                const remaining = state.playerScore - score;
+                const isWin = remaining === 0; const isBust = remaining < 0 || remaining === 1;
+
+                if (isWin) playTrigger('EVENT', 'win'); else if (isBust) playTrigger('EVENT', 'bust');
+                else { if (seq && playTrigger('SEQUENCE', seq)) {} else if (!playTrigger('REMAINING_SCORE', remaining)) playTrigger('TURN_SCORE', score); }
+
+                if (!isBust) {
+                    const newStats = { ...stats, totalScore: stats.totalScore + score, totalDarts: stats.totalDarts + 3 };
+                    if (score === 180) newStats._180s++; else if (score >= 140) newStats._140s++; else if (score >= 100) newStats._100s++;
+                    if (isWin) { newStats.gamesPlayed++; newStats.wins++; if (score > newStats.highestCheckout) newStats.highestCheckout = score; setStats(newStats); setState(prev => ({...prev, active: false, winner: 'player'})); return; }
+                    setStats(newStats);
+                }
+                setState(prev => ({ ...prev, playerScore: isBust ? prev.playerScore : remaining, turn: 'bot', history: [...prev.history, { player: 'player', score: isBust ? 0 : score, remaining: isBust ? prev.playerScore : remaining }] }));
+                setInput(''); setDarts([null, null, null]); setCurrentDartIdx(0);
+            };
+
+            const playMotivation = () => {
+                const mot = triggers.filter(t => t.type === 'MOTIVATION');
+                if (mot.length > 0) { const r = mot[Math.floor(Math.random()*mot.length)]; if(r.audioData) new Audio(r.audioData).play(); else speak(r.label); } 
+                else speak("Come on!");
+            };
+
+            if (!state.active && state.winner) {
+                return (
+                    <div className="h-screen flex flex-col items-center justify-center p-6 bg-slate-900 text-center">
+                        <div className={`p-8 rounded-full mb-6 ${state.winner === 'player' ? 'bg-emerald-500/20' : 'bg-red-500/20'}`}>
+                            <Icon name={state.winner === 'player' ? "trophy" : "target"} size={80} className={state.winner === 'player' ? "text-emerald-400 animate-bounce" : "text-red-400"} />
+                        </div>
+                        <h2 className="text-5xl font-black text-white">{state.winner === 'player' ? 'VICTORY' : 'DEFEAT'}</h2>
+                        <button onClick={onExit} className="w-full py-4 bg-slate-700 rounded-xl font-bold text-white mt-8">Back to Menu</button>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="h-screen flex flex-col bg-slate-900">
+                    <div className="p-4 grid grid-cols-2 gap-4 border-b border-slate-800">
+                        <div className={`p-4 rounded-2xl flex flex-col items-center border transition-all ${state.turn === 'player' ? 'bg-slate-800 border-emerald-500 scale-105 shadow-lg shadow-emerald-500/10' : 'bg-slate-900 border-slate-800 opacity-60'}`}>
+                            <span className="text-xs font-bold text-slate-400">YOU</span>
+                            <span className="text-6xl font-black text-white">{state.playerScore}</span>
+                            {checkoutGuide && state.turn === 'player' && <span className="text-xs text-emerald-400 font-mono mt-2">{checkoutGuide}</span>}
+                        </div>
+                        <div className={`p-4 rounded-2xl flex flex-col items-center border transition-all ${state.turn === 'bot' ? 'bg-slate-800 border-red-500 scale-105 shadow-lg shadow-red-500/10' : 'bg-slate-900 border-slate-800 opacity-60'}`}>
+                            <span className="text-xs font-bold text-slate-400 uppercase">{botConfig.name}</span>
+                            <span className="text-6xl font-black text-white">{state.botScore}</span>
+                        </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-900/50 no-scrollbar">
+                        {state.history.slice().reverse().map((h, i) => (
+                            <div key={i} className="flex justify-between text-xs text-slate-500 border-b border-slate-800 pb-1">
+                                <span className={h.player === 'player' ? 'text-emerald-500 font-bold' : ''}>{h.player === 'player' ? 'YOU' : 'BOT'}</span>
+                                <span>Scored: {h.score}</span><span>Left: {h.remaining}</span>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="flex-none bg-slate-800 p-4 rounded-t-3xl shadow-2xl relative">
+                        <div className="flex justify-center items-center -mt-8 mb-4 space-x-2">
+                            <div className="bg-slate-900 p-1 rounded-xl flex shadow-lg">
+                                <button onClick={() => setInputMode('TOTAL')} className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${inputMode === 'TOTAL' ? 'bg-emerald-500 text-slate-900' : 'text-slate-400'}`}>Total</button>
+                                <button onClick={() => setInputMode('DARTS')} className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${inputMode === 'DARTS' ? 'bg-blue-500 text-white' : 'text-slate-400'}`}>Darts</button>
+                            </div>
+                            <button onClick={playMotivation} className="h-10 w-10 bg-yellow-400 rounded-xl flex items-center justify-center shadow-lg active:scale-95 transition-transform"><Icon name="zap" size={20} fill="currentColor" className="text-slate-900" /></button>
+                        </div>
+                        <div className="flex justify-center mb-4 h-16 items-center">
+                            {state.turn === 'player' ? (inputMode === 'TOTAL' ? <div className="text-5xl font-mono font-bold text-emerald-400">{input || <span className="opacity-20">0</span>}</div> : (
+                                <div className="flex space-x-2">
+                                    {[0,1,2].map(idx => <div key={idx} onClick={() => setCurrentDartIdx(idx)} className={`w-12 h-12 rounded-full flex items-center justify-center font-bold border-2 transition-all cursor-pointer ${currentDartIdx === idx ? 'border-blue-500 bg-blue-500/20 text-blue-400 scale-110' : 'border-slate-700 bg-slate-900 text-slate-500'}`}>{darts[idx] !== null ? darts[idx] : '-'}</div>)}
+                                    <div className="w-12 h-12 rounded-lg bg-slate-900 flex flex-col items-center justify-center border border-slate-700"><span className="text-[8px] text-slate-500">SUM</span><span className="font-bold text-white">{darts.reduce((a,b)=>a+(b||0),0)}</span></div>
+                                </div>
+                            )) : <span className="text-slate-500 animate-pulse">Bot thinking...</span>}
+                        </div>
+                        <div className="grid grid-cols-4 gap-2 max-w-sm mx-auto">
+                            {[1,2,3].map(n => <button key={n} disabled={state.turn === 'bot'} onClick={() => { if(inputMode==='TOTAL'){if(input.length<3)setInput(i=>i+n)}else{const cv=darts[currentDartIdx]||''; if((cv+n).length<3 && parseInt(cv+n)<=60){const nd=[...darts]; nd[currentDartIdx]=parseInt(cv+n); setDarts(nd);}} }} className="h-12 bg-slate-700 text-white rounded font-bold active:bg-slate-600 disabled:opacity-50">{n}</button>)}
+                            <button disabled={state.turn === 'bot'} onClick={() => { if(inputMode==='TOTAL')setInput(i=>i.slice(0,-1)); else { const nd=[...darts]; if(nd[currentDartIdx]!==null){const s=nd[currentDartIdx].toString().slice(0,-1); nd[currentDartIdx]=s?parseInt(s):null; setDarts(nd);} else if(currentDartIdx>0)setCurrentDartIdx(c=>c-1);} }} className="bg-slate-700 text-red-400 rounded flex items-center justify-center active:bg-slate-600 disabled:opacity-50"><Icon name="rotate-ccw" size={20} /></button>
+                            {[4,5,6].map(n => <button key={n} disabled={state.turn === 'bot'} onClick={() => { if(inputMode==='TOTAL'){if(input.length<3)setInput(i=>i+n)}else{const cv=darts[currentDartIdx]||''; if((cv+n).length<3 && parseInt(cv+n)<=60){const nd=[...darts]; nd[currentDartIdx]=parseInt(cv+n); setDarts(nd);}} }} className="h-12 bg-slate-700 text-white rounded font-bold active:bg-slate-600 disabled:opacity-50">{n}</button>)}
+                            <button disabled={state.turn === 'bot'} onClick={() => { if(inputMode==='DARTS' && currentDartIdx < 2) setCurrentDartIdx(c=>c+1); }} className="bg-slate-700 text-blue-400 rounded flex items-center justify-center active:bg-slate-600 disabled:opacity-50"><Icon name="arrow-right" size={20} /></button>
+                            {[7,8,9,0].map(n => <button key={n} disabled={state.turn === 'bot'} onClick={() => { if(inputMode==='TOTAL'){if(input.length<3)setInput(i=>i+n)}else{const cv=darts[currentDartIdx]||''; if((cv+n).length<3 && parseInt(cv+n)<=60){const nd=[...darts]; nd[currentDartIdx]=parseInt(cv+n); setDarts(nd);}} }} className="h-12 bg-slate-700 text-white rounded font-bold active:bg-slate-600 disabled:opacity-50">{n}</button>)}
+                        </div>
+                        <button disabled={state.turn === 'bot'} onClick={submitScore} className={`w-full mt-4 h-14 rounded-lg font-bold text-xl shadow-lg transition-transform active:scale-95 disabled:opacity-50 ${inputMode === 'TOTAL' ? 'bg-emerald-500 text-slate-900 shadow-emerald-500/20' : 'bg-blue-500 text-white shadow-blue-500/20'}`}>{inputMode === 'TOTAL' ? 'ENTER SCORE' : 'ENTER 3 DARTS'}</button>
+                        <button onClick={onExit} className="w-full mt-2 text-xs text-slate-500 font-bold hover:text-white uppercase">Exit Game</button>
+                    </div>
+                </div>
+            );
+        };
+
+        const VoiceStudioView = ({ triggers, setTriggers, onBack }) => {
+            const [mode, setMode] = useState('list');
+            const [editingId, setEditingId] = useState(null);
+            const [newType, setNewType] = useState('TURN_SCORE');
+            const [newValue, setNewValue] = useState('');
+            const [newLabel, setNewLabel] = useState('');
+            const [recording, setRecording] = useState(false);
+            const [tempAudio, setTempAudio] = useState(null);
+            const recorderRef = useRef(null);
+            const chunksRef = useRef([]);
+
+            const startRec = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    const mimeType = MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : 'audio/webm';
+                    const rec = new MediaRecorder(stream, { mimeType });
+                    chunksRef.current = [];
+                    rec.ondataavailable = e => chunksRef.current.push(e.data);
+                    rec.onstop = () => {
+                        const blob = new Blob(chunksRef.current, { type: mimeType });
+                        const reader = new FileReader();
+                        reader.readAsDataURL(blob);
+                        reader.onloadend = () => setTempAudio(reader.result);
+                        stream.getTracks().forEach(t => t.stop());
+                    };
+                    rec.start(); recorderRef.current = rec; setRecording(true);
+                } catch(e) { alert("Mic Access Error: " + e.message); }
+            };
+
+            const stopRec = () => { if(recorderRef.current){ recorderRef.current.stop(); setRecording(false); } };
+
+            const saveTrigger = () => {
+                const val = newType === 'MOTIVATION' ? (newValue || `mot_${Date.now()}`) : newValue;
+                if (!val) return;
+                const data = { type: newType, value: val, label: newLabel || `${newType} ${val}`, audioData: tempAudio, isDefault: false };
+                if (editingId) setTriggers(prev => prev.map(t => t.id === editingId ? {...t, ...data} : t));
+                else setTriggers(prev => [...prev, {...data, id: Date.now().toString()}]);
+                setMode('list'); setEditingId(null); setTempAudio(null); setNewValue(''); setNewLabel('');
+            };
+
+            const downloadAll = () => {
+                const zip = new JSZip(); const folder = zip.folder("dart_voices");
+                triggers.forEach(t => { if(t.audioData) { const parts = t.audioData.split(','); const ext = parts[0].includes('mp4') ? 'mp4' : 'webm'; folder.file(`${t.label.replace(/[^a-z0-9]/gi, '_')}.${ext}`, parts[1], {base64: true}); } });
+                zip.generateAsync({type:"blob"}).then(c => { const a = document.createElement("a"); a.href = URL.createObjectURL(c); a.download = "dart_voices.zip"; a.click(); });
+            };
+
+            if (mode === 'create') {
+                return (
+                    <div className="p-6 h-screen flex flex-col bg-slate-900">
+                        <div className="flex items-center space-x-4 mb-4">
+                            <button onClick={() => setMode('list')} className="p-2 -ml-2 rounded-full hover:bg-slate-800 transition-colors"><Icon name="chevron-left" /></button>
+                            <h2 className="text-xl font-bold text-white">{editingId ? 'Edit' : 'New'} Trigger</h2>
+                        </div>
+                        <div className="space-y-6 mt-4 flex-1">
+                            <div className="grid grid-cols-2 gap-2">
+                                {['TURN_SCORE', 'REMAINING_SCORE', 'SEQUENCE', 'EVENT', 'MOTIVATION'].map(t => (
+                                    <button key={t} onClick={() => setNewType(t)} className={`p-2 text-[10px] font-bold border rounded-lg transition-all ${newType === t ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400' : 'bg-slate-800 border-slate-700 text-slate-500'}`}>{t.replace('_',' ')}</button>
+                                ))}
+                            </div>
+                            {newType !== 'MOTIVATION' && (
+                                <input type="text" value={newValue} onChange={e => setNewValue(e.target.value)} placeholder="Trigger Value (e.g. 180 or 20,5,1)" className="w-full p-4 bg-slate-800 rounded-xl text-white outline-none border border-slate-700" />
+                            )}
+                            <input type="text" value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Label / Display Name" className="w-full p-4 bg-slate-800 rounded-xl text-white outline-none border border-slate-700" />
+                            <div className="bg-slate-800 p-8 rounded-2xl flex flex-col items-center border border-slate-700 space-y-4">
+                                <button onClick={recording ? stopRec : startRec} className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${recording ? 'bg-red-500 animate-pulse' : 'bg-slate-700'}`}>
+                                    <Icon name={recording ? "square" : "mic"} size={32} fill={recording ? "white" : "none"} />
+                                </button>
+                                <span className="text-xs text-slate-500">{recording ? 'Recording...' : 'Tap to Record'}</span>
+                                {tempAudio && <button onClick={() => new Audio(tempAudio).play()} className="text-emerald-400 font-bold flex items-center"><Icon name="play" size={16} className="mr-1" /> Preview</button>}
+                            </div>
+                            <button onClick={saveTrigger} className="w-full py-4 bg-emerald-500 text-slate-900 font-bold rounded-xl mt-auto shadow-lg">SAVE TRIGGER</button>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="p-6 h-screen flex flex-col overflow-hidden bg-slate-900">
+                    <div className="flex items-center space-x-4 mb-4">
+                        <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-800 transition-colors"><Icon name="chevron-left" /></button>
+                        <h2 className="text-xl font-bold text-white">Voice Studio</h2>
+                    </div>
+                    <div className="mb-4 flex justify-between gap-2">
+                        <button onClick={downloadAll} className="flex-1 py-2 bg-blue-500/10 text-blue-400 rounded-lg text-xs font-bold border border-blue-500/20"><Icon name="download" size={14} className="inline mr-1" /> Export All</button>
+                        <button onClick={() => { setEditingId(null); setTempAudio(null); setMode('create'); }} className="flex-1 py-2 bg-emerald-500/10 text-emerald-400 rounded-lg text-xs font-bold border border-emerald-500/20"><Icon name="plus" size={14} className="inline mr-1" /> New Trigger</button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto space-y-3 pb-20 no-scrollbar">
+                        {triggers.map(t => (
+                            <div key={t.id} className="bg-slate-800 p-4 rounded-xl border border-slate-700/50 flex items-center justify-between">
+                                <div className="flex-1 truncate mr-2">
+                                    <div className="font-bold text-slate-200 truncate">{t.label}</div>
+                                    <div className="text-[10px] text-slate-500 uppercase flex items-center gap-2 mt-1">
+                                        <span className="bg-slate-900 px-1 rounded">{t.type}</span>
+                                        {t.audioData ? <span className="text-emerald-500 flex items-center"><Icon name="check" size={10} /> REC</span> : <span className="text-slate-600 flex items-center"><Icon name="bot" size={10} /> TTS</span>}
+                                    </div>
+                                </div>
+                                <div className="flex space-x-1">
+                                    <button onClick={() => { if(t.audioData) new Audio(t.audioData).play(); else speak(t.label); }} className="p-2 bg-slate-700 rounded text-emerald-400"><Icon name="play" size={16} /></button>
+                                    <button onClick={() => { setEditingId(t.id); setNewType(t.type); setNewValue(t.value); setNewLabel(t.label); setTempAudio(t.audioData); setMode('create'); }} className="p-2 bg-slate-700 rounded text-blue-400"><Icon name="edit-2" size={16} /></button>
+                                    {!t.isDefault && <button onClick={() => { if(confirm('Delete?')) setTriggers(prev => prev.filter(x=>x.id!==t.id)); }} className="p-2 bg-slate-700 rounded text-red-400"><Icon name="trash-2" size={16} /></button>}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const StatsView = ({ stats, onBack }) => {
+            const avg = stats.totalDarts > 0 ? ((stats.totalScore / stats.totalDarts) * 3).toFixed(1) : '0.0';
+            const winRate = stats.gamesPlayed > 0 ? Math.round((stats.wins / stats.gamesPlayed) * 100) : 0;
+            return (
+                <div className="p-6 h-screen flex flex-col overflow-y-auto bg-slate-900">
+                    <Header title="Career Stats" onBack={onBack} />
+                    <div className="grid grid-cols-2 gap-4 mt-6">
+                        <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700"><div className="text-xs text-slate-500 font-bold mb-1">MATCHES</div><div className="text-2xl font-black text-white">{stats.gamesPlayed}</div></div>
+                        <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700"><div className="text-xs text-slate-500 font-bold mb-1">WIN RATE</div><div className="text-2xl font-black text-white">{winRate}%</div></div>
+                        <div className="bg-slate-800 p-4 rounded-2xl border border-emerald-500/50 col-span-2 text-center shadow-lg shadow-emerald-500/10"><div className="text-xs text-emerald-400 font-bold mb-1 uppercase">3-Dart Average</div><div className="text-4xl font-black text-white">{avg}</div></div>
+                    </div>
+                    <div className="mt-8 space-y-3">
+                        <div className="bg-slate-800 p-4 rounded-xl flex justify-between border border-slate-700"><span>180s</span><span className="font-black text-emerald-400">{stats._180s}</span></div>
+                        <div className="bg-slate-800 p-4 rounded-xl flex justify-between border border-slate-700"><span>140s</span><span className="font-black text-slate-300">{stats._140s}</span></div>
+                        <div className="bg-slate-800 p-4 rounded-xl flex justify-between border border-slate-700"><span>Tons (100+)</span><span className="font-black text-slate-400">{stats._100s}</span></div>
+                        <div className="bg-slate-800 p-4 rounded-xl flex justify-between border border-slate-700"><span>Best Checkout</span><span className="font-black text-white">{stats.highestCheckout}</span></div>
+                    </div>
+                    <button onClick={() => { if(confirm('Wipe everything?')) { localStorage.clear(); window.location.reload(); } }} className="mt-auto py-4 text-red-500 text-xs font-bold underline">RESET ALL DATA</button>
+                </div>
+            );
+        };
+
+        const WarmUpView = ({ onExit }) => {
+            const [target, setTarget] = useState(1);
+            const [hits, setHits] = useState(0);
+            const [misses, setMisses] = useState(0);
+            
+            return (
+                <div className="p-6 h-screen flex flex-col bg-slate-900">
+                    <Header title="Warm Up" onBack={onExit} />
+                    <div className="flex-1 flex flex-col items-center justify-center">
+                        <p className="text-slate-400 font-bold mb-2">AIM FOR</p>
+                        <div className="text-9xl font-black text-emerald-400 mb-12 drop-shadow-[0_0_30px_rgba(52,211,153,0.3)]">{target === 25 ? 'BULL' : target}</div>
+                        <div className="grid grid-cols-2 gap-4 w-full max-w-xs">
+                            <button onClick={() => setMisses(m => m + 1)} className="p-8 bg-slate-800 border-2 border-slate-700 rounded-2xl font-black text-2xl text-slate-500">MISS</button>
+                            <button onClick={() => { if(target===25){alert('Complete!'); onExit();}else{setTarget(t=>t===20?25:t+1); setHits(h=>h+1);}}} className="p-8 bg-emerald-500 rounded-2xl font-black text-2xl text-slate-900 shadow-lg shadow-emerald-500/20 active:scale-95 transition-transform">HIT</button>
+                        </div>
+                    </div>
+                    <div className="flex justify-between text-xs font-mono text-slate-600 mt-8"><span>Hits: {hits}</span><span>Misses: {misses}</span></div>
+                </div>
+            );
+        };
+
+        // --- Main Controller ---
+
+        const App = () => {
+            const [view, setView] = useState('menu');
+            const [stats, setStats] = useState(INITIAL_STATS);
+            const [triggers, setTriggers] = useState(DEFAULT_TRIGGERS);
+            const [gameState, setGameState] = useState(null);
+
+            useEffect(() => {
+                const savedData = localStorage.getItem(STORAGE_KEY_DATA);
+                if (savedData) {
+                    const parsed = JSON.parse(savedData);
+                    setStats(parsed.stats || INITIAL_STATS);
+                    const loadedTriggers = parsed.triggers || [];
+                    const mergedTriggers = [...DEFAULT_TRIGGERS];
+                    loadedTriggers.forEach(lt => {
+                        const index = mergedTriggers.findIndex(mt => mt.id === lt.id);
+                        if (index >= 0) mergedTriggers[index] = lt;
+                        else mergedTriggers.push(lt);
+                    });
+                    setTriggers(mergedTriggers);
+                }
+
+                const savedGame = localStorage.getItem(STORAGE_KEY_GAME);
+                if (savedGame) {
+                    const parsedGame = JSON.parse(savedGame);
+                    setGameState(parsedGame);
+                    if (parsedGame.active) setView(parsedGame.type === 'x01' ? 'game_x01' : 'warm_up');
+                }
+            }, []);
+
+            useEffect(() => {
+                localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify({ stats, triggers }));
+            }, [stats, triggers]);
+
+            useEffect(() => {
+                if (gameState) localStorage.setItem(STORAGE_KEY_GAME, JSON.stringify(gameState));
+            }, [gameState]);
+
+            const playTrigger = (type, value) => {
+                // Find precise match first, then fallback
+                const match = triggers.find(t => t.type === type && t.value == value);
+                if (match) {
+                    if (match.audioData) {
+                        const audio = new Audio(match.audioData);
+                        audio.play().catch(e => console.error("Playback failed", e));
+                    } else {
+                        speak(match.label);
+                    }
+                    return true;
+                }
+                return false;
+            };
+
+            const startGame = (s, b) => {
+                playTrigger('EVENT', 'game_on');
+                setGameState({ active: true, type: 'x01', startScore: s, botLevel: b, playerScore: s, botScore: s, turn: 'player', history: [] });
+                setView('game_x01');
+            };
+
+            const exitGame = () => {
+                setGameState(prev => ({ ...prev, active: false }));
+                setView('menu');
+            };
+
+            if (view === 'menu') return <MainMenu onNavigate={setView} hasActiveGame={gameState?.active} onContinue={() => setView(gameState.type === 'x01' ? 'game_x01' : 'warm_up')} />;
+            if (view === 'game_setup') return <GameSetupView onStart={startGame} onBack={() => setView('menu')} />;
+            if (view === 'game_x01') return <X01View state={gameState} setState={setGameState} stats={stats} setStats={setStats} playTrigger={playTrigger} triggers={triggers} onExit={exitGame} />;
+            if (view === 'voice_studio') return <VoiceStudioView triggers={triggers} setTriggers={setTriggers} onBack={() => setView('menu')} />;
+            if (view === 'stats') return <StatsView stats={stats} onBack={() => setView('menu')} />;
+            if (view === 'warm_up') return <WarmUpView onExit={() => setView('menu')} />;
+            return <MainMenu />;
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
+
