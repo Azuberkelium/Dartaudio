@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DartsAu by Skellium - v9</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- JSZip -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { background-color: #0f172a; margin: 0; font-family: sans-serif; -webkit-tap-highlight-color: transparent; }
+        .animate-pulse-slow { animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none;  scrollbar-width: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- Shared Components ---
+        const Icon = ({ name, size = 24, className = "", fill = "none" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (iconRef.current) {
+                    lucide.createIcons({
+                        attrs: { stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", fill: fill, width: size, height: size },
+                        nameAttr: 'data-lucide'
+                    });
+                }
+            }, [name, size, fill]);
+            return <i data-lucide={name} className={className} ref={iconRef}></i>;
+        };
+
+        const Toggle = ({ label, checked, onChange }) => (
+            <div onClick={() => onChange(!checked)} className="flex items-center justify-between p-3 bg-slate-800 rounded-xl border border-slate-700 cursor-pointer">
+                <span className="text-sm font-bold text-slate-400">{label}</span>
+                <div className={`w-12 h-6 rounded-full p-1 transition-colors ${checked ? 'bg-emerald-500' : 'bg-slate-600'}`}>
+                    <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform ${checked ? 'translate-x-6' : 'translate-x-0'}`} />
+                </div>
+            </div>
+        );
+
+        const STORAGE_KEY_DATA = 'dartsau_data_v9';
+        const STORAGE_KEY_GAME = 'dartsau_game_v9';
+
+        const INITIAL_STATS = {
+            gamesPlayed: 0, wins: 0, losses: 0, 
+            highestCheckout: 0, bestLegDarts: 999, totalDarts: 0, totalScore: 0, 
+            _180s: 0, _140s: 0, _100s: 0,
+            cricketPlayed: 0, cricketWins: 0, cricketMarks: 0,
+            halfItPlayed: 0, halfItBest: 0,
+            atwPlayed: 0, atwWins: 0
+        };
+
+        const DEFAULT_TRIGGERS = [
+            { id: 'def_180', type: 'TURN_SCORE', value: 180, label: 'One Hundred and Eighty!', isDefault: true },
+            { id: 'def_win', type: 'EVENT', value: 'win', label: 'Game Shot!', isDefault: true },
+            { id: 'def_bust', type: 'EVENT', value: 'bust', label: 'Bust!', isDefault: true },
+            { id: 'def_start', type: 'EVENT', value: 'game_on', label: 'Game On', isDefault: true },
+            { id: 'def_botwin', type: 'EVENT', value: 'bot_win', label: 'Bot wins', isDefault: true },
+            { id: 'def_chips', type: 'SEQUENCE', value: '20,5,1', label: 'Fish and Chips!', isDefault: true },
+            { id: 'def_mot1', type: 'MOTIVATION', value: 'focus', label: 'Stay Focused!', isDefault: true },
+        ];
+
+        const BOT_LEVELS = {
+            EASY: { name: 'Pub Beginner', avg: 40, checkoutRate: 0.1, color: 'text-green-400' },
+            MEDIUM: { name: 'League Captain', avg: 60, checkoutRate: 0.3, color: 'text-yellow-400' },
+            HARD: { name: 'PDC Pro', avg: 95, checkoutRate: 0.7, color: 'text-red-500' },
+        };
+
+        const speak = (text) => {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.rate = 1.1;
+                window.speechSynthesis.speak(utterance);
+            }
+        };
+
+        const Header = ({ title, onBack }) => (
+            <div className="flex items-center space-x-4 mb-4">
+                <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-800 transition-colors"><Icon name="chevron-left" /></button>
+                <h2 className="text-xl font-bold text-white">{title}</h2>
+            </div>
+        );
+
+        const getCheckoutGuide = (score) => {
+            if (score > 170 || score < 2) return null;
+            const checkouts = { 170: 'T20 T20 Bull', 160: 'T20 T20 D20', 140: 'T20 T16 D16', 100: 'T20 D20', 40: 'D20', 32: 'D16' };
+            return checkouts[score] || null;
+        };
+
+        // --- Views ---
+
+        const MainMenu = ({ onNavigate, hasActiveGame, onContinue }) => (
+            <div className="p-6 flex flex-col h-screen overflow-hidden">
+                <div className="flex-1 flex flex-col justify-center items-center space-y-8">
+                    <div className="text-center space-y-2">
+                        <div className="w-24 h-24 bg-emerald-500 rounded-3xl mx-auto flex items-center justify-center shadow-lg rotate-6 hover:rotate-12 transition-transform shadow-emerald-500/20">
+                            <Icon name="target" size={56} className="text-slate-900" />
+                        </div>
+                        <h1 className="text-4xl font-black tracking-tighter text-white">DartsAu<span className="block text-lg font-medium text-emerald-400 tracking-normal">by Skellium</span></h1>
+                    </div>
+                    <div className="w-full space-y-4 max-w-sm mx-auto">
+                        {hasActiveGame && (
+                            <button onClick={onContinue} className="w-full p-4 bg-slate-800 border border-emerald-500/30 rounded-xl flex items-center justify-between group hover:bg-slate-700 animate-pulse-slow transition-all">
+                                <span className="flex items-center font-bold text-emerald-400"><Icon name="rotate-ccw" className="mr-3" /> Continue Game</span>
+                            </button>
+                        )}
+                        <button onClick={() => onNavigate('game_setup')} className="w-full p-5 bg-gradient-to-r from-emerald-600 to-emerald-500 rounded-xl flex items-center justify-between shadow-lg active:scale-95 transition-transform text-slate-900 font-bold text-xl shadow-emerald-500/20">
+                            <span className="flex items-center"><Icon name="play" className="mr-3" fill="currentColor" /> Play Game</span>
+                        </button>
+                         <button onClick={() => onNavigate('warm_up')} className="w-full p-4 bg-slate-800 rounded-xl flex items-center justify-between hover:bg-slate-700 active:scale-95 transition-all">
+                            <span className="flex items-center font-bold text-slate-300"><Icon name="activity" className="mr-3 text-blue-400" /> Warm Up</span>
+                        </button>
+                        <div className="grid grid-cols-2 gap-4">
+                             <button onClick={() => onNavigate('profiles')} className="p-4 bg-slate-800 rounded-xl flex flex-col items-center justify-center hover:bg-slate-700 active:scale-95 transition-all">
+                                <Icon name="users" size={28} className="mb-2 text-blue-400" />
+                                <span className="text-sm font-bold text-slate-400">Profiles</span>
+                            </button>
+                            <button onClick={() => onNavigate('stats')} className="p-4 bg-slate-800 rounded-xl flex flex-col items-center justify-center hover:bg-slate-700 active:scale-95 transition-all">
+                                <Icon name="bar-chart-2" size={28} className="mb-2 text-yellow-400" />
+                                <span className="text-sm font-bold text-slate-400">Stats</span>
+                            </button>
+                        </div>
+                        <button onClick={() => onNavigate('voice_studio')} className="w-full p-3 bg-slate-800 rounded-xl flex items-center justify-center hover:bg-slate-700">
+                             <Icon name="mic" size={16} className="mr-2 text-rose-400" /> <span className="text-xs font-bold text-slate-400">Voice Studio</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+
+        const ProfileManager = ({ profiles, setProfiles, onBack }) => {
+            const [newName, setNewName] = useState('');
+            const addProfile = () => {
+                if(!newName.trim()) return;
+                setProfiles([...profiles, { id: Date.now().toString(), name: newName, stats: {...INITIAL_STATS} }]);
+                setNewName('');
+            };
+            const deleteProfile = (id) => {
+                if(profiles.length <= 1) return alert("Must keep one profile.");
+                if(confirm("Delete profile?")) setProfiles(profiles.filter(p => p.id !== id));
+            };
+            return (
+                <div className="p-6 h-screen flex flex-col bg-slate-900">
+                    <Header title="Profiles" onBack={onBack} />
+                    <div className="flex gap-2 mb-6">
+                        <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="New Player Name" className="flex-1 p-3 rounded-xl bg-slate-800 text-white outline-none border border-slate-700 focus:border-emerald-500" />
+                        <button onClick={addProfile} className="p-3 bg-emerald-500 rounded-xl text-slate-900 font-bold"><Icon name="plus" /></button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto space-y-3">
+                        {profiles.map(p => (
+                            <div key={p.id} className="bg-slate-800 p-4 rounded-xl flex justify-between items-center border border-slate-700">
+                                <div><div className="font-bold text-white text-lg">{p.name}</div></div>
+                                <button onClick={() => deleteProfile(p.id)} className="p-2 bg-slate-700 text-red-400 rounded-lg"><Icon name="trash-2" size={18} /></button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const GameSetupView = ({ profiles, onStart, onBack }) => {
+            const [gameMode, setGameMode] = useState('X01');
+            const [score, setScore] = useState(501);
+            const [opponentType, setOpponentType] = useState('PvB');
+            const [p1Id, setP1Id] = useState(profiles[0]?.id);
+            const [p2Id, setP2Id] = useState(profiles.length > 1 ? profiles[1].id : 'bot');
+            const [botLevel, setBotLevel] = useState('MEDIUM');
+            
+            // Variants
+            const [doubleIn, setDoubleIn] = useState(false);
+            const [doubleOut, setDoubleOut] = useState(true);
+
+            return (
+                <div className="p-6 h-screen flex flex-col">
+                    <Header title="Game Setup" onBack={onBack} />
+                    <div className="flex-1 space-y-6 overflow-y-auto pb-4">
+                        <div>
+                            <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Game Mode</label>
+                            <div className="grid grid-cols-2 gap-2">
+                                {['X01', 'CRICKET', 'HALF-IT', 'ATW (Random)'].map(m => (
+                                    <button key={m} onClick={() => setGameMode(m)} className={`p-3 rounded-lg text-xs font-bold border transition-all ${gameMode === m ? 'bg-emerald-500 border-emerald-500 text-slate-900' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>{m}</button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="bg-slate-800 p-1 rounded-xl flex shadow-lg">
+                            <button onClick={() => setOpponentType('PvB')} className={`flex-1 py-3 rounded-lg text-sm font-bold transition-all ${opponentType === 'PvB' ? 'bg-emerald-500 text-slate-900' : 'text-slate-400'}`}>Vs Bot</button>
+                            <button onClick={() => setOpponentType('PvP')} className={`flex-1 py-3 rounded-lg text-sm font-bold transition-all ${opponentType === 'PvP' ? 'bg-blue-500 text-white' : 'text-slate-400'}`}>Vs Player</button>
+                        </div>
+
+                        <div>
+                            <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Player 1</label>
+                            <select value={p1Id} onChange={e=>setP1Id(e.target.value)} className="w-full p-4 bg-slate-800 rounded-xl text-white outline-none border border-slate-700">
+                                {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                        </div>
+
+                        {opponentType === 'PvP' ? (
+                            <div>
+                                <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Player 2</label>
+                                <select value={p2Id} onChange={e=>setP2Id(e.target.value)} className="w-full p-4 bg-slate-800 rounded-xl text-white outline-none border border-slate-700">
+                                    {profiles.filter(p => p.id !== p1Id).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                </select>
+                            </div>
+                        ) : (
+                             <div>
+                                <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Bot Level</label>
+                                <div className="space-y-2">
+                                    {Object.keys(BOT_LEVELS).map(key => (
+                                        <button key={key} onClick={() => setBotLevel(key)} className={`w-full p-3 rounded-xl flex items-center justify-between border transition-all ${botLevel === key ? `border-current ${BOT_LEVELS[key].color} bg-slate-800` : 'border-transparent bg-slate-800/50 text-slate-500'}`}>
+                                            <span className="font-bold">{BOT_LEVELS[key].name}</span>
+                                            <span className="text-xs font-mono opacity-60">{BOT_LEVELS[key].avg} avg</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {gameMode === 'X01' && (
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Start Score</label>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        {[301, 501].map(s => <button key={s} onClick={() => setScore(s)} className={`p-4 rounded-xl font-black text-xl border-2 ${score === s ? 'border-emerald-500 text-emerald-400' : 'border-slate-700 bg-slate-800 text-slate-500'}`}>{s}</button>)}
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">X01 Options</label>
+                                    <div className="space-y-2">
+                                        <Toggle label="Double In" checked={doubleIn} onChange={setDoubleIn} />
+                                        <Toggle label="Double Out" checked={doubleOut} onChange={setDoubleOut} />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    <button onClick={() => onStart(gameMode, score, opponentType, p1Id, p2Id, botLevel, doubleIn, doubleOut)} className="w-full py-4 bg-emerald-500 text-slate-900 font-bold text-xl rounded-xl shadow-lg active:scale-95 transition-all">Start Match</button>
+                </div>
+            );
+        };
+
+        const GameInput = ({ onEnter, canEnter, playerColor, isBot }) => {
+            const [darts, setDarts] = useState([null, null, null]);
+            const [idx, setIdx] = useState(0);
+
+            const handleNum = (n) => {
+                const cv = darts[idx] || '';
+                if((cv+n).length <= 2 && parseInt(cv+n) <= 60) {
+                    const nd = [...darts]; nd[idx] = parseInt(cv+n); setDarts(nd);
+                }
+            };
+            const next = () => { if(idx < 2) setIdx(idx+1); };
+            const back = () => {
+                const nd = [...darts];
+                if(nd[idx] !== null) { 
+                    const s = nd[idx].toString().slice(0,-1); 
+                    nd[idx] = s ? parseInt(s) : null; setDarts(nd); 
+                } else if(idx > 0) setIdx(idx-1);
+            };
+            const submit = () => { onEnter(darts); setDarts([null,null,null]); setIdx(0); };
+
+            return (
+                 <div className="bg-slate-800 p-4 rounded-t-3xl shadow-2xl">
+                     <div className="flex justify-center mb-4 h-16 items-center">
+                        {isBot ? <span className="text-slate-500 animate-pulse">Bot throwing...</span> : (
+                             <div className="flex space-x-2">
+                                {[0,1,2].map(i => <div key={i} onClick={()=>setIdx(i)} className={`w-12 h-12 rounded-full flex items-center justify-center font-bold border-2 ${idx===i ? `border-${playerColor}-500 text-${playerColor}-400` : 'border-slate-700 bg-slate-900 text-slate-500'}`}>{darts[i]!==null?darts[i]:'-'}</div>)}
+                            </div>
+                        )}
+                     </div>
+                     <div className="grid grid-cols-4 gap-2 max-w-sm mx-auto">
+                        {[1,2,3,4,5,6,7,8,9,0].map(n => <button key={n} disabled={isBot} onClick={()=>handleNum(n)} className={`h-12 bg-slate-700 text-white rounded font-bold ${n===0?'col-start-4 row-start-3':''}`}>{n}</button>)}
+                        <button disabled={isBot} onClick={back} className="bg-slate-700 text-red-400 rounded flex items-center justify-center col-start-4 row-start-1"><Icon name="rotate-ccw" /></button>
+                        <button disabled={isBot} onClick={next} className="bg-slate-700 text-blue-400 rounded flex items-center justify-center col-start-4 row-start-2"><Icon name="arrow-right" /></button>
+                     </div>
+                     <button disabled={isBot || !canEnter} onClick={submit} className={`w-full mt-4 h-14 rounded-lg font-bold text-xl bg-${playerColor}-500 text-white`}>ENTER</button>
+                 </div>
+            );
+        };
+
+        const X01Wrapper = (props) => {
+            const [input, setInput] = useState('');
+            const [darts, setDarts] = useState([null,null,null]);
+            const [idx, setIdx] = useState(0);
+            const [inputMode, setInputMode] = useState('TOTAL');
+            const { state, setState, updateStats, onExit, playTrigger } = props;
+            const p1 = props.profiles.find(p=>p.id===state.p1Id);
+            const p2 = state.mode==='PvB' ? {name:'Bot'} : props.profiles.find(p=>p.id===state.p2Id);
+            const isP1 = state.turn === 'p1';
+            
+            // Bot Logic
+            useEffect(() => {
+                if(state.mode === 'PvB' && !isP1 && state.active) {
+                    setTimeout(() => {
+                        const max = state.p2Score > 60 ? 60 : state.p2Score;
+                        const s = Math.floor(Math.random() * max);
+                        let valid = true;
+                        if (state.doubleOut && state.p2Score - s === 1) valid = false;
+                        if (state.doubleOut && state.p2Score - s === 0) { 
+                            playTrigger('EVENT', 'bot_win');
+                            updateStats('bot', 0, 0, true, 0); 
+                            setState(p=>({...p, active: false, winner: 'p2'}));
+                            return;
+                        }
+                        
+                        if (!valid || state.p2Score - s < 0) {
+                             setState(p=>({...p, turn: 'p1'})); // Bot bust
+                        } else {
+                             setState(p=>({...p, p2Score: state.p2Score - s, turn: 'p1', p2In: true}));
+                        }
+                    }, 1000);
+                }
+            }, [state.turn]);
+
+            const submit = () => {
+                let score = 0;
+                let startedIn = state[state.turn + 'In']; 
+                let tempIn = startedIn;
+                
+                if (inputMode === 'TOTAL') {
+                    score = parseInt(input || 0);
+                    if (!startedIn && score > 0) tempIn = true;
+                } else {
+                    const dvals = darts.map(d => d || 0);
+                    if (startedIn) {
+                        score = dvals.reduce((a,b) => a+b, 0);
+                    } else {
+                        score = dvals.reduce((a,b) => a+b, 0);
+                        if (score > 0) tempIn = true;
+                    }
+                }
+
+                const currentScore = state[state.turn+'Score'];
+                const rem = currentScore - score;
+                let valid = true;
+
+                if (state.doubleOut) {
+                    if (rem === 1) valid = false; 
+                }
+
+                if (rem < 0) valid = false;
+
+                // Audio Triggers
+                if (valid && rem === 0) playTrigger('EVENT', 'win');
+                else if (!valid) playTrigger('EVENT', 'bust');
+                else if (valid) {
+                    if (!playTrigger('REMAINING_SCORE', rem)) playTrigger('TURN_SCORE', score);
+                }
+
+                if (!valid) {
+                    setState(p=>({...p, turn: state.turn==='p1'?'p2':'p1'}));
+                } else if (rem === 0) {
+                    updateStats(state[state.turn+'Id'], score, 3, true, 0); 
+                    // Record loss for opponent if PvP
+                    if(state.mode === 'PvP') {
+                        const loserId = state.turn === 'p1' ? state.p2Id : state.p1Id;
+                        playTrigger('EVENT', 'loss'); // This might need logic if we want specific loss trigger for specific person, but generic is ok
+                    }
+                    setState(p=>({...p, active: false, winner: state.turn}));
+                    return;
+                } else {
+                    const nextState = {
+                        [state.turn+'Score']: rem,
+                        turn: state.turn==='p1'?'p2':'p1'
+                    };
+                    if (!startedIn && tempIn) nextState[state.turn+'In'] = true;
+                    
+                    updateStats(state[state.turn+'Id'], score, 3, false, 0);
+                    setState(p=>({...p, ...nextState}));
+                }
+                
+                setInput(''); setDarts([null,null,null]); setIdx(0);
+            };
+            
+            if(!state.active) return <WinScreen winner={state.winner} profiles={props.profiles} onExit={onExit} />;
+
+            return (
+                <div className="h-screen flex flex-col bg-slate-900">
+                    <div className="p-4 grid grid-cols-2 gap-4 border-b border-slate-800 text-center text-white">
+                            <div>
+                                <div className="text-xs text-emerald-400">{p1.name}</div>
+                                <div className="text-4xl font-bold">{state.p1Score}</div>
+                                {!state.p1In && <div className="text-[10px] text-red-400 uppercase">Double In Required</div>}
+                            </div>
+                            <div>
+                                <div className="text-xs text-blue-400">{p2.name}</div>
+                                <div className="text-4xl font-bold">{state.p2Score}</div>
+                                {!state.p2In && <div className="text-[10px] text-red-400 uppercase">Double In Required</div>}
+                            </div>
+                    </div>
+                    <div className="flex-1"></div>
+                    <div className="bg-slate-800 p-4">
+                        <div className="flex justify-center mb-2 gap-2">
+                            <button onClick={()=>setInputMode('TOTAL')} className={`p-2 rounded text-xs ${inputMode==='TOTAL'?'bg-emerald-500 text-black':'bg-slate-700 text-white'}`}>Total</button>
+                            <button onClick={()=>setInputMode('DARTS')} className={`p-2 rounded text-xs ${inputMode==='DARTS'?'bg-emerald-500 text-black':'bg-slate-700 text-white'}`}>Darts</button>
+                        </div>
+                        {inputMode === 'TOTAL' ? 
+                            <input value={input} readOnly className="w-full bg-slate-900 text-white text-center text-3xl p-2 mb-2 rounded" placeholder="0" /> :
+                            <div className="flex justify-center gap-2 mb-2">{darts.map((d,i)=><div key={i} onClick={()=>setIdx(i)} className={`w-10 h-10 border flex items-center justify-center text-white ${idx===i?'border-emerald-500':''}`}>{d}</div>)}</div>
+                        }
+                        <div className="grid grid-cols-4 gap-2">
+                            {[1,2,3,4,5,6,7,8,9,0].map(n => <button key={n} onClick={()=>{
+                                if(inputMode==='TOTAL') setInput(i=>i+n);
+                                else { const nd=[...darts]; nd[idx]=parseInt((nd[idx]||'')+n); setDarts(nd); }
+                            }} className={`h-10 bg-slate-700 text-white rounded font-bold ${n===0?'col-start-4 row-start-3':''}`}>{n}</button>)}
+                            <button onClick={submit} className="col-span-4 bg-emerald-500 h-12 rounded font-bold mt-2">ENTER</button>
+                        </div>
+                    </div>
+                </div>
+            )
+        }
+
+        const CricketView = ({ state, setState, profiles, updateStats, onExit, playTrigger }) => {
+            const targets = [20, 19, 18, 17, 16, 15, 25];
+            const p1 = profiles.find(p=>p.id===state.p1Id);
+            const p2 = state.mode==='PvB' ? {name: 'Bot'} : profiles.find(p=>p.id===state.p2Id);
+            const isP1 = state.turn === 'p1';
+            const col = isP1 ? 'emerald' : (state.mode==='PvP'?'blue':'red');
+
+            useEffect(() => {
+                if(!state.cricketState) {
+                    setState(p => ({...p, cricketState: {
+                        marks: { p1: {20:0,19:0,18:0,17:0,16:0,15:0,25:0}, p2: {20:0,19:0,18:0,17:0,16:0,15:0,25:0} },
+                        scores: { p1: 0, p2: 0 }
+                    }}));
+                }
+            }, []);
+            
+            if(!state.cricketState) return <div>Loading...</div>;
+            const { marks, scores } = state.cricketState;
+
+            const handleTurn = (darts) => {
+                const turnMarks = { ...marks };
+                const turnScores = { ...scores };
+                const opponent = state.turn === 'p1' ? 'p2' : 'p1';
+                
+                darts.forEach(val => {
+                    if(val === null) return;
+                    let target = val; 
+                    let mult = 1;
+                    if (val === 50) { target = 25; mult = 2; }
+                    else if (val === 25) { target = 25; mult = 1; }
+                    else if (targets.includes(val)) { mult = 1; }
+                    else if (val % 2 === 0 && targets.includes(val/2)) { target = val/2; mult = 2; }
+                    else if (val % 3 === 0 && targets.includes(val/3)) { target = val/3; mult = 3; }
+                    else return; 
+
+                    if(targets.includes(target)) {
+                        const current = turnMarks[state.turn][target];
+                        const oppClosed = turnMarks[opponent][target] >= 3;
+                        const newMarks = Math.min(3, current + mult);
+                        turnMarks[state.turn][target] += mult; 
+                        if (current + mult > 3 && !oppClosed) {
+                             const points = (current + mult - 3) * target;
+                             turnScores[state.turn] += points;
+                        } else if (current < 3 && current + mult > 3 && !oppClosed) {
+                             const points = (current + mult - 3) * target;
+                             turnScores[state.turn] += points;
+                        }
+                    }
+                });
+
+                const allClosed = targets.every(t => turnMarks[state.turn][t] >= 3);
+                const hasScore = turnScores[state.turn] >= turnScores[opponent];
+                
+                if (allClosed && hasScore) {
+                     updateStats(isP1 ? state.p1Id : state.p2Id, 0, 0, true, 0); 
+                     playTrigger('EVENT', 'win');
+                     setState(p => ({...p, active: false, winner: state.turn}));
+                } else {
+                     setState(p => ({...p, cricketState: { marks: turnMarks, scores: turnScores }, turn: opponent }));
+                }
+            };
+
+            const RenderMark = ({ count }) => {
+                if(count >= 3) return <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-slate-900 font-bold text-xs"><Icon name="x" size={16} /></div>;
+                if(count === 2) return <div className="text-white font-bold">X</div>;
+                if(count === 1) return <div className="text-white font-bold">/</div>;
+                return <div className="w-2 h-2 rounded-full bg-slate-700"></div>;
+            };
+
+            if(!state.active) return <WinScreen winner={state.winner} profiles={profiles} onExit={onExit} />;
+
+            return (
+                 <div className="h-screen flex flex-col bg-slate-900">
+                    <div className="p-4 grid grid-cols-3 gap-2 border-b border-slate-800 items-center">
+                        <div className={`flex flex-col items-center ${isP1 ? 'scale-110' : 'opacity-60'}`}>
+                            <span className="text-xs font-bold text-emerald-400">{p1.name}</span>
+                            <span className="text-3xl font-black text-white">{scores.p1}</span>
+                        </div>
+                        <div className="text-center text-slate-500 font-bold">VS</div>
+                        <div className={`flex flex-col items-center ${!isP1 ? 'scale-110' : 'opacity-60'}`}>
+                            <span className="text-xs font-bold text-blue-400">{p2.name}</span>
+                            <span className="text-3xl font-black text-white">{scores.p2}</span>
+                        </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4">
+                        {targets.map(t => (
+                            <div key={t} className="flex justify-between items-center mb-2 bg-slate-800 p-2 rounded">
+                                <div className="w-10 flex justify-center"><RenderMark count={marks.p1[t]} /></div>
+                                <div className="font-black text-slate-400 w-10 text-center">{t===25?'B':t}</div>
+                                <div className="w-10 flex justify-center"><RenderMark count={marks.p2[t]} /></div>
+                            </div>
+                        ))}
+                    </div>
+                    <GameInput onEnter={handleTurn} canEnter={true} playerColor={col} isBot={!isP1 && state.mode==='PvB'} />
+                 </div>
+            );
+        };
+
+        const HalfItView = ({ state, setState, profiles, updateStats, onExit, playTrigger }) => {
+            const rounds = [15, 16, 'D', 17, 18, 'T', 19, 20, 25];
+            const p1 = profiles.find(p=>p.id===state.p1Id);
+            const p2 = state.mode==='PvB' ? {name: 'Bot'} : profiles.find(p=>p.id===state.p2Id);
+            
+            useEffect(() => {
+                if(!state.halfItState) setState(p => ({...p, halfItState: { scores: {p1: 40, p2: 40}, roundIdx: 0 }}));
+            }, []);
+
+            if(!state.halfItState) return <div>Loading...</div>;
+            const { scores, roundIdx } = state.halfItState;
+            const currentTarget = rounds[roundIdx];
+            const isP1 = state.turn === 'p1';
+            const col = isP1 ? 'emerald' : (state.mode==='PvP'?'blue':'red');
+
+            const handleTurn = (darts) => {
+                let roundScore = 0;
+                let hitCount = 0;
+                darts.forEach(val => {
+                    if(val === null) return;
+                    let hit = false;
+                    let points = 0;
+                    if (typeof currentTarget === 'number') {
+                        if (val === currentTarget) { hit = true; points = val; }
+                        else if (val === currentTarget * 2) { hit = true; points = val; }
+                        else if (val === currentTarget * 3) { hit = true; points = val; }
+                        else if (currentTarget === 25 && val === 50) { hit = true; points = 50; }
+                    } else if (currentTarget === 'D') {
+                         if (val % 2 === 0 || val === 50) { hit = true; points = val; }
+                    } else if (currentTarget === 'T') {
+                         if (val % 3 === 0) { hit = true; points = val; }
+                    }
+                    if(hit) { roundScore += points; hitCount++; }
+                });
+
+                let newTotal = scores[state.turn];
+                if (hitCount > 0) newTotal += roundScore; else newTotal = Math.floor(newTotal / 2);
+                const nextScores = { ...scores, [state.turn]: newTotal };
+                
+                if (state.turn === 'p1') {
+                    setState(p => ({...p, halfItState: { ...p.halfItState, scores: nextScores }, turn: 'p2'}));
+                } else {
+                    if (roundIdx === rounds.length - 1) {
+                        const winner = nextScores.p1 >= nextScores.p2 ? 'p1' : 'p2';
+                        updateStats(state.p1Id, 0, 0, winner==='p1', 0);
+                        playTrigger('EVENT', 'win');
+                        setState(p => ({...p, active: false, winner }));
+                    } else {
+                        setState(p => ({...p, halfItState: { scores: nextScores, roundIdx: roundIdx + 1 }, turn: 'p1'}));
+                    }
+                }
+            };
+
+            if(!state.active) return <WinScreen winner={state.winner} profiles={profiles} onExit={onExit} />;
+
+            return (
+                <div className="h-screen flex flex-col bg-slate-900">
+                    <div className="p-4 grid grid-cols-3 gap-2 border-b border-slate-800 items-center">
+                        <div className={`text-center ${isP1 ? 'scale-110 font-bold' : 'opacity-60'}`}>
+                            <div className="text-emerald-400 text-xs">{p1.name}</div>
+                            <div className="text-2xl text-white">{scores.p1}</div>
+                        </div>
+                        <div className="text-center">
+                             <div className="text-slate-500 text-[10px] uppercase">Target</div>
+                             <div className="text-4xl font-black text-yellow-400">{currentTarget === 25 ? 'BULL' : currentTarget}</div>
+                        </div>
+                         <div className={`text-center ${!isP1 ? 'scale-110 font-bold' : 'opacity-60'}`}>
+                            <div className="text-blue-400 text-xs">{p2.name}</div>
+                            <div className="text-2xl text-white">{scores.p2}</div>
+                        </div>
+                    </div>
+                    <div className="flex-1 flex flex-col justify-center items-center text-slate-500 text-sm">
+                        <p>Round {roundIdx + 1} of {rounds.length}</p>
+                        <p className="mt-4 text-xs max-w-xs text-center">Miss all 3 darts and your score is halved!</p>
+                    </div>
+                    <GameInput onEnter={handleTurn} canEnter={true} playerColor={col} isBot={!isP1 && state.mode==='PvB'} />
+                </div>
+            );
+        };
+
+        const ATWView = ({ state, setState, profiles, updateStats, onExit, playTrigger }) => {
+            const targets = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,25];
+            const p1 = profiles.find(p=>p.id===state.p1Id);
+            const p2 = state.mode==='PvB' ? {name: 'Bot'} : profiles.find(p=>p.id===state.p2Id);
+            
+            useEffect(() => {
+                if(!state.atwState) {
+                    const t = [...targets].sort(() => Math.random() - 0.5);
+                    setState(p => ({...p, atwState: { targets: t, p1Idx: 0, p2Idx: 0 }}));
+                }
+            }, []);
+
+            if(!state.atwState) return <div>Loading...</div>;
+            const { targets: gameTargets, p1Idx, p2Idx } = state.atwState;
+            const currentIdx = state.turn === 'p1' ? p1Idx : p2Idx;
+            const isP1 = state.turn === 'p1';
+            const col = isP1 ? 'emerald' : (state.mode==='PvP'?'blue':'red');
+
+            const handleTurn = (darts) => {
+                let idx = currentIdx;
+                darts.forEach(val => {
+                    if (val === null) return;
+                    const rawVal = (val === 50) ? 25 : (val > 20 && val !== 25) ? (val % 3 === 0 ? val/3 : val/2) : val;
+                    if (rawVal === gameTargets[idx]) idx++;
+                });
+
+                if (idx >= gameTargets.length) {
+                    updateStats(state.turn === 'p1' ? state.p1Id : state.p2Id, 0, 0, true, 0);
+                    playTrigger('EVENT', 'win');
+                    setState(p => ({...p, active: false, winner: state.turn}));
+                } else {
+                    setState(p => ({
+                        ...p, 
+                        atwState: { ...p.atwState, [state.turn === 'p1' ? 'p1Idx' : 'p2Idx']: idx },
+                        turn: state.turn === 'p1' ? 'p2' : 'p1'
+                    }));
+                }
+            };
+
+            if(!state.active) return <WinScreen winner={state.winner} profiles={profiles} onExit={onExit} />;
+
+             return (
+                <div className="h-screen flex flex-col bg-slate-900">
+                    <div className="p-4 grid grid-cols-2 gap-4 border-b border-slate-800">
+                        <div className={`p-4 rounded-xl border flex flex-col items-center ${isP1 ? 'bg-slate-800 border-emerald-500' : 'border-slate-800 opacity-50'}`}>
+                            <span className="text-emerald-400 text-xs font-bold">{p1.name}</span>
+                            <span className="text-white text-3xl font-black">{gameTargets[p1Idx] === 25 ? 'BULL' : gameTargets[p1Idx]}</span>
+                        </div>
+                        <div className={`p-4 rounded-xl border flex flex-col items-center ${!isP1 ? 'bg-slate-800 border-blue-500' : 'border-slate-800 opacity-50'}`}>
+                            <span className="text-blue-400 text-xs font-bold">{p2.name}</span>
+                            <span className="text-white text-3xl font-black">{gameTargets[p2Idx] === 25 ? 'BULL' : gameTargets[p2Idx]}</span>
+                        </div>
+                    </div>
+                    <div className="flex-1 flex flex-col items-center justify-center space-y-4">
+                         <div className="text-slate-500 text-sm">Sequence</div>
+                         <div className="flex flex-wrap justify-center gap-2 px-6">
+                            {gameTargets.map((t, i) => (
+                                <span key={i} className={`text-xs font-bold ${i < currentIdx ? 'text-slate-700' : (i===currentIdx ? 'text-white scale-125' : 'text-slate-500')}`}>
+                                    {t===25?'B':t}
+                                </span>
+                            ))}
+                         </div>
+                    </div>
+                    <GameInput onEnter={handleTurn} canEnter={true} playerColor={col} isBot={!isP1 && state.mode==='PvB'} />
+                </div>
+            );
+        };
+
+        const WinScreen = ({ winner, profiles, onExit }) => {
+            return (
+                <div className="h-screen flex flex-col items-center justify-center p-6 bg-slate-900 text-center">
+                    <Icon name="trophy" size={80} className="text-emerald-400 animate-bounce mb-6" />
+                    <h2 className="text-4xl font-black text-white">{winner.toUpperCase()} WINS!</h2>
+                    <button onClick={onExit} className="w-full py-4 bg-slate-700 rounded-xl font-bold text-white mt-8">Back to Menu</button>
+                </div>
+            );
+        };
+
+        const StatsView = ({ profiles, onBack }) => {
+            const [selectedId, setSelectedId] = useState(profiles[0]?.id);
+            const [tab, setTab] = useState('X01');
+            const p = profiles.find(pr => pr.id === selectedId) || profiles[0];
+            const s = p.stats;
+            const avg = s.totalDarts > 0 ? ((s.totalScore / s.totalDarts) * 3).toFixed(1) : '0.0';
+
+            return (
+                <div className="p-6 h-screen flex flex-col bg-slate-900">
+                    <Header title="Stats" onBack={onBack} />
+                    <select value={selectedId} onChange={e=>setSelectedId(e.target.value)} className="w-full p-3 mb-4 bg-slate-800 rounded-xl text-white outline-none border border-slate-700">
+                        {profiles.map(pr => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
+                    </select>
+                    <div className="flex gap-2 mb-6">
+                        {['X01', 'CRICKET', 'FUN'].map(t => (
+                            <button key={t} onClick={()=>setTab(t)} className={`flex-1 py-2 text-[10px] font-bold rounded-lg border ${tab===t?'bg-emerald-500 border-emerald-500 text-slate-900':'border-slate-700 text-slate-500'}`}>{t}</button>
+                        ))}
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto">
+                        {tab === 'X01' && (
+                            <div className="space-y-3">
+                                <div className="bg-slate-800 p-4 rounded-xl border border-emerald-500/50 text-center shadow-lg"><div className="text-xs text-emerald-400 font-bold mb-1 uppercase">3-Dart Average</div><div className="text-4xl font-black text-white">{avg}</div></div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="bg-slate-800 p-3 rounded-xl border border-slate-700"><div className="text-xs text-slate-500 font-bold">Games</div><div className="text-xl font-bold text-white">{s.gamesPlayed}</div></div>
+                                    <div className="bg-slate-800 p-3 rounded-xl border border-slate-700"><div className="text-xs text-slate-500 font-bold">Wins</div><div className="text-xl font-bold text-white">{s.wins}</div></div>
+                                </div>
+                                <div className="bg-slate-800 p-3 rounded-xl flex justify-between border border-slate-700"><span>180s</span><span className="font-black text-emerald-400">{s._180s}</span></div>
+                                <div className="bg-slate-800 p-3 rounded-xl flex justify-between border border-slate-700"><span>High Out</span><span className="font-black text-white">{s.highestCheckout}</span></div>
+                            </div>
+                        )}
+                        {tab === 'CRICKET' && (
+                             <div className="space-y-3">
+                                <div className="bg-slate-800 p-4 rounded-xl border border-blue-500/50 text-center shadow-lg"><div className="text-xs text-blue-400 font-bold mb-1 uppercase">Wins</div><div className="text-4xl font-black text-white">{s.cricketWins}</div></div>
+                            </div>
+                        )}
+                        {tab === 'FUN' && (
+                             <div className="space-y-3">
+                                 <div className="bg-slate-800 p-3 rounded-xl border border-slate-700"><div className="text-xs text-slate-500 font-bold">Half-It Best</div><div className="text-xl font-bold text-white">{s.halfItBest || 0}</div></div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const VoiceStudioView = ({ triggers, setTriggers, onBack }) => {
+            const [mode, setMode] = useState('list');
+            const [editingId, setEditingId] = useState(null);
+            const [newType, setNewType] = useState('TURN_SCORE');
+            const [newValue, setNewValue] = useState('');
+            const [newLabel, setNewLabel] = useState('');
+            const [recording, setRecording] = useState(false);
+            const [tempAudio, setTempAudio] = useState(null);
+            const recorderRef = useRef(null);
+            const chunksRef = useRef([]);
+
+            const startRec = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    const mimeType = MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : 'audio/webm';
+                    const rec = new MediaRecorder(stream, { mimeType });
+                    chunksRef.current = [];
+                    rec.ondataavailable = e => chunksRef.current.push(e.data);
+                    rec.onstop = () => {
+                        const blob = new Blob(chunksRef.current, { type: mimeType });
+                        const reader = new FileReader();
+                        reader.readAsDataURL(blob);
+                        reader.onloadend = () => setTempAudio(reader.result);
+                        stream.getTracks().forEach(t => t.stop());
+                    };
+                    rec.start(); recorderRef.current = rec; setRecording(true);
+                } catch(e) { alert("Mic Access Error: " + e.message); }
+            };
+
+            const stopRec = () => { if(recorderRef.current){ recorderRef.current.stop(); setRecording(false); } };
+
+            const saveTrigger = () => {
+                const val = newType === 'MOTIVATION' ? (newValue || `mot_${Date.now()}`) : newValue;
+                if (!val) return;
+                const data = { type: newType, value: val, label: newLabel || `${newType} ${val}`, audioData: tempAudio, isDefault: false };
+                if (editingId) setTriggers(prev => prev.map(t => t.id === editingId ? {...t, ...data} : t));
+                else setTriggers(prev => [...prev, {...data, id: Date.now().toString()}]);
+                setMode('list'); setEditingId(null); setTempAudio(null); setNewValue(''); setNewLabel('');
+            };
+
+            const downloadAll = () => {
+                const zip = new JSZip(); const folder = zip.folder("dart_voices");
+                triggers.forEach(t => { if(t.audioData) { const parts = t.audioData.split(','); const ext = parts[0].includes('mp4') ? 'mp4' : 'webm'; folder.file(`${t.label.replace(/[^a-z0-9]/gi, '_')}.${ext}`, parts[1], {base64: true}); } });
+                zip.generateAsync({type:"blob"}).then(c => { const a = document.createElement("a"); a.href = URL.createObjectURL(c); a.download = "dart_voices.zip"; a.click(); });
+            };
+
+            if (mode === 'create') {
+                return (
+                    <div className="p-6 h-screen flex flex-col bg-slate-900">
+                        <Header title={editingId ? 'Edit Trigger' : 'New Trigger'} onBack={() => setMode('list')} />
+                        <div className="space-y-6 mt-4 flex-1">
+                            <div className="space-y-2">
+                                <label className="text-xs font-bold text-slate-500 uppercase">Trigger Type</label>
+                                <select 
+                                    value={newType} 
+                                    onChange={e => setNewType(e.target.value)} 
+                                    className="w-full p-4 bg-slate-800 rounded-xl text-white outline-none border border-slate-700"
+                                >
+                                    <option value="TURN_SCORE">I Scored Exactly...</option>
+                                    <option value="SCORE_ABOVE">I Scored Above...</option>
+                                    <option value="SCORE_BELOW">I Scored Below...</option>
+                                    <option value="REMAINING_SCORE">I Have Left...</option>
+                                    <option value="SEQUENCE">Dart Sequence</option>
+                                    <option value="EVENT">Game Event</option>
+                                    <option value="MOTIVATION">Motivation Clip</option>
+                                </select>
+                            </div>
+
+                            {newType === 'EVENT' ? (
+                                <div className="space-y-2">
+                                    <label className="text-xs font-bold text-slate-500 uppercase">Select Event</label>
+                                    <select value={newValue} onChange={(e) => setNewValue(e.target.value)} className="w-full p-4 bg-slate-800 rounded-xl text-white outline-none border border-slate-700">
+                                        <option value="">Select Event...</option>
+                                        <option value="win">Match Won</option>
+                                        <option value="loss">Match Lost</option>
+                                        <option value="bust">Bust</option>
+                                        <option value="game_on">Game On</option>
+                                        <option value="bot_win">Bot Wins</option>
+                                    </select>
+                                </div>
+                            ) : newType !== 'MOTIVATION' && (
+                                <div className="space-y-2">
+                                    <label className="text-xs font-bold text-slate-500 uppercase">
+                                        {newType.includes('SCORE') ? "Score Value" : newType === 'SEQUENCE' ? "Sequence (e.g. 20,5,1)" : "Value"}
+                                    </label>
+                                    <input 
+                                        type="text" 
+                                        value={newValue} 
+                                        onChange={e => setNewValue(e.target.value)} 
+                                        placeholder={newType.includes('SCORE') ? "e.g. 100" : "Value"}
+                                        className="w-full p-4 bg-slate-800 rounded-xl text-white outline-none border border-slate-700" 
+                                    />
+                                </div>
+                            )}
+
+                            <div className="space-y-2">
+                                <label className="text-xs font-bold text-slate-500 uppercase">Label</label>
+                                <input type="text" value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Display Name" className="w-full p-4 bg-slate-800 rounded-xl text-white outline-none border border-slate-700" />
+                            </div>
+
+                            <div className="bg-slate-800 p-8 rounded-2xl flex flex-col items-center border border-slate-700 space-y-4">
+                                <button onClick={recording ? stopRec : startRec} className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${recording ? 'bg-red-500 animate-pulse' : 'bg-slate-700'}`}>
+                                    <Icon name={recording ? "square" : "mic"} size={32} fill={recording ? "white" : "none"} />
+                                </button>
+                                <span className="text-xs text-slate-500">{recording ? 'Recording...' : 'Tap to Record'}</span>
+                                {tempAudio && <button onClick={() => new Audio(tempAudio).play()} className="text-emerald-400 font-bold flex items-center"><Icon name="play" size={16} className="mr-1" /> Preview</button>}
+                            </div>
+                            <button onClick={saveTrigger} className="w-full py-4 bg-emerald-500 text-slate-900 font-bold rounded-xl mt-auto shadow-lg">SAVE TRIGGER</button>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="p-6 h-screen flex flex-col overflow-hidden bg-slate-900">
+                    <Header title="Voice Studio" onBack={onBack} />
+                    <div className="mb-4 flex justify-between gap-2">
+                        <button onClick={downloadAll} className="flex-1 py-2 bg-blue-500/10 text-blue-400 rounded-lg text-xs font-bold border border-blue-500/20"><Icon name="download" size={14} className="inline mr-1" /> Export All</button>
+                        <button onClick={() => { setEditingId(null); setTempAudio(null); setMode('create'); }} className="flex-1 py-2 bg-emerald-500/10 text-emerald-400 rounded-lg text-xs font-bold border border-emerald-500/20"><Icon name="plus" size={14} className="inline mr-1" /> New Trigger</button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto space-y-3 pb-20 no-scrollbar">
+                        {triggers.map(t => (
+                            <div key={t.id} className="bg-slate-800 p-4 rounded-xl border border-slate-700/50 flex items-center justify-between">
+                                <div className="flex-1 truncate mr-2">
+                                    <div className="font-bold text-slate-200 truncate">{t.label}</div>
+                                    <div className="text-[10px] text-slate-500 uppercase flex items-center gap-2 mt-1">
+                                        <span className="bg-slate-900 px-1 rounded">{t.type}</span>
+                                        {t.audioData ? <span className="text-emerald-500 flex items-center"><Icon name="check" size={10} /> REC</span> : <span className="text-slate-600 flex items-center"><Icon name="bot" size={10} /> TTS</span>}
+                                    </div>
+                                </div>
+                                <div className="flex space-x-1">
+                                    <button onClick={() => { if(t.audioData) new Audio(t.audioData).play(); else speak(t.label); }} className="p-2 bg-slate-700 rounded text-emerald-400"><Icon name="play" size={16} /></button>
+                                    <button onClick={() => { setEditingId(t.id); setNewType(t.type); setNewValue(t.value); setNewLabel(t.label); setTempAudio(t.audioData); setMode('create'); }} className="p-2 bg-slate-700 rounded text-blue-400"><Icon name="edit-2" size={16} /></button>
+                                    {!t.isDefault && <button onClick={() => { if(confirm('Delete?')) setTriggers(prev => prev.filter(x=>x.id!==t.id)); }} className="p-2 bg-slate-700 rounded text-red-400"><Icon name="trash-2" size={16} /></button>}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [view, setView] = useState('menu');
+            const [profiles, setProfiles] = useState([{id: 'p1', name: 'Player 1', stats: {...INITIAL_STATS}}]);
+            const [triggers, setTriggers] = useState(DEFAULT_TRIGGERS);
+            const [gameState, setGameState] = useState(null);
+
+            useEffect(() => {
+                const savedData = localStorage.getItem(STORAGE_KEY_DATA);
+                if (savedData) {
+                    const parsed = JSON.parse(savedData);
+                    if (parsed.profiles) setProfiles(parsed.profiles);
+                    setTriggers(parsed.triggers || DEFAULT_TRIGGERS);
+                }
+            }, []);
+
+            useEffect(() => { localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify({ profiles, triggers })); }, [profiles, triggers]);
+
+            const updateStats = (id, score, darts, isWin, legDarts) => {
+                if(id === 'bot') return;
+                setProfiles(prev => prev.map(p => {
+                    if (p.id !== id) return p;
+                    const s = { ...p.stats };
+                    if (gameState.type === 'X01') {
+                        if (!isWin) { s.totalScore += score; s.totalDarts += darts; if(score===180) s._180s++; }
+                        if (isWin) { s.wins++; s.gamesPlayed++; if(score > s.highestCheckout) s.highestCheckout = score; }
+                    }
+                    if (gameState.type === 'CRICKET' && isWin) s.cricketWins = (s.cricketWins || 0) + 1;
+                    return { ...p, stats: s };
+                }));
+            };
+
+            const startGame = (type, score, mode, p1Id, p2Id, botLevel, doubleIn, doubleOut) => {
+                const startInStatus = !doubleIn;
+                
+                setGameState({ 
+                    active: true, type, mode, p1Id, p2Id, botLevel, 
+                    p1Score: score, p2Score: score, turn: 'p1', history: [],
+                    p1In: startInStatus, p2In: startInStatus,
+                    doubleIn, doubleOut
+                });
+                if(type === 'X01') setView('game_x01');
+                if(type === 'CRICKET') setView('game_cricket');
+                if(type === 'HALF-IT') setView('game_halfit');
+                if(type === 'ATW (Random)') setView('game_atw');
+            };
+
+            const playTrigger = (type, value) => {
+                let match = null;
+                // 1. Exact Match
+                match = triggers.find(t => t.type === type && t.value == value);
+
+                // 2. Range Match (Only for TURN_SCORE checks)
+                if (!match && type === 'TURN_SCORE') {
+                    const score = parseInt(value);
+                    // Check Above
+                    const above = triggers
+                        .filter(t => t.type === 'SCORE_ABOVE' && score > parseInt(t.value))
+                        .sort((a,b) => parseInt(b.value) - parseInt(a.value)); // Descending
+                    if(above.length > 0) match = above[0];
+
+                    // Check Below (only if no Above match found, or prefer above?) 
+                    // Usually we prioritize "Above 100" over "Below 180". 
+                    if(!match) {
+                        const below = triggers
+                            .filter(t => t.type === 'SCORE_BELOW' && score < parseInt(t.value))
+                            .sort((a,b) => parseInt(a.value) - parseInt(b.value)); // Ascending
+                        if(below.length > 0) match = below[0];
+                    }
+                }
+
+                if (match) {
+                    if (match.audioData) {
+                        const audio = new Audio(match.audioData);
+                        audio.play().catch(e => console.error("Playback failed", e));
+                    } else speak(match.label);
+                    return true;
+                }
+                return false;
+            };
+
+            if (view === 'menu') return <MainMenu onNavigate={setView} hasActiveGame={gameState?.active} onContinue={() => setView(gameState.type === 'X01' ? 'game_x01' : 'game_cricket')} />;
+            if (view === 'profiles') return <ProfileManager profiles={profiles} setProfiles={setProfiles} onBack={() => setView('menu')} />;
+            if (view === 'stats') return <StatsView profiles={profiles} onBack={() => setView('menu')} />;
+            if (view === 'game_setup') return <GameSetupView profiles={profiles} onStart={startGame} onBack={() => setView('menu')} />;
+            if (view === 'warm_up') return <WarmUpView onExit={() => setView('menu')} />;
+            if (view === 'voice_studio') return <VoiceStudioView triggers={triggers} setTriggers={setTriggers} onBack={() => setView('menu')} />;
+
+            if (view === 'game_cricket') return <CricketView state={gameState} setState={setGameState} profiles={profiles} updateStats={updateStats} playTrigger={playTrigger} onExit={() => setView('menu')} />;
+            if (view === 'game_halfit') return <HalfItView state={gameState} setState={setGameState} profiles={profiles} updateStats={updateStats} playTrigger={playTrigger} onExit={() => setView('menu')} />;
+            if (view === 'game_atw') return <ATWView state={gameState} setState={setGameState} profiles={profiles} updateStats={updateStats} playTrigger={playTrigger} onExit={() => setView('menu')} />;
+            if (view === 'game_x01') return <X01Wrapper state={gameState} setState={setGameState} updateStats={updateStats} profiles={profiles} playTrigger={playTrigger} onExit={() => setView('menu')} />;
+
+            return <MainMenu />;
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
+
